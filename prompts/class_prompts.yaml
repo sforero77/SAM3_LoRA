@@ -1,0 +1,47 @@
+# Registro extensible de prompts por clase para SAM3 LoRA
+# ----------------------------------------------------------------
+# Cómo funciona:
+#  - Cada entrada es una CLASE CANÓNICA. La clave debe coincidir
+#    exactamente con `categories[].name` de tu COCO.
+#  - `synonyms`: lista usada como augmentación de prompt durante
+#    el entrenamiento (se muestrea aleatoriamente). El primero es
+#    el canónico que se usa en evaluación / inferencia por defecto.
+#  - `parent`: solo documental (taxonomía). No afecta entrenamiento.
+#  - `description`: descriptores visuales adicionales útiles para
+#    clases raras (se mezclan con `synonyms` al muestrear).
+#
+# Para añadir una clase nueva: solo agrega una entrada aquí,
+# garantiza que tu COCO use el mismo nombre canónico, y entrena
+# con `--target_class <clave>`. No requiere tocar código.
+# ----------------------------------------------------------------
+
+building:
+  synonyms: [building, house, rooftop, edificio, construction]
+
+vegetation:
+  synonyms: [vegetation, foliage, green area, vegetación]
+
+avocado_tree:
+  parent: vegetation
+  synonyms: [avocado tree, árbol de aguacate, aguacate]
+  description: [dense round canopy, dark green tree]
+
+lemon_tree:
+  parent: vegetation
+  synonyms: [lemon tree, árbol de limón, limonero, citrus tree]
+
+road:
+  synonyms: [road, street, highway, pavement, carretera]
+
+water:
+  synonyms: [water, river, lake, pond, body of water]
+
+# Ejemplos comentados para clases raras — descoméntalos y ajústalos:
+# greenhouse:
+#   synonyms: [greenhouse, invernadero, plastic greenhouse]
+#   description: [transparent rectangular structure, agricultural plastic cover]
+#
+# zinc_roof:
+#   parent: building
+#   synonyms: [zinc roof, techo de zinc, metal roof]
+#   description: [corrugated metal sheets, reflective gray roof]

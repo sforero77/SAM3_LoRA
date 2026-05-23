@@ -21,6 +21,7 @@ from PIL import Image as PILImage
 import numpy as np
 from torchvision.transforms import v2
 from tqdm import tqdm
+from pycocotools import mask as coco_mask
 
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
@@ -91,6 +92,52 @@ class SAM3DatasetWithCategories(Dataset):
     def __len__(self):
         return len(self.image_files)
 
+    def _decode_segmentation(self, segmentation, orig_h, orig_w, filename, ann_idx):
+        """
+        Decode a COCO segmentation field (polygon list, RLE dict, or compressed RLE)
+        into a binary mask tensor at (self.resolution, self.resolution).
+
+        Returns a float32 tensor of shape (H, W) with values in {0.0, 1.0},
+        or None if decoding fails or segmentation is missing/empty. The collator
+        tolerates None via the is_valid_segment flag, so failures do not crash
+        training — they only disable mask loss for that object.
+        """
+        if segmentation is None:
+            return None
+
+        try:
+            if isinstance(segmentation, list):
+                if len(segmentation) == 0:
+                    return None
+                rles = coco_mask.frPyObjects(segmentation, orig_h, orig_w)
+                rle = coco_mask.merge(rles) if isinstance(rles, list) else rles
+                mask = coco_mask.decode(rle)
+            elif isinstance(segmentation, dict):
+                rle = segmentation
+                if isinstance(rle.get("counts"), list):
+                    rle = coco_mask.frPyObjects(rle, orig_h, orig_w)
+                mask = coco_mask.decode(rle)
+            else:
+                return None
+
+            if mask.ndim == 3:
+                mask = mask[..., 0]
+            if mask.sum() == 0:
+                return None
+
+            mask_pil = PILImage.fromarray((mask * 255).astype(np.uint8), mode="L")
+            mask_pil = mask_pil.resize(
+                (self.resolution, self.resolution), PILImage.NEAREST
+            )
+            mask_np = (np.array(mask_pil) > 127).astype(np.float32)
+            return torch.from_numpy(mask_np)
+        except Exception as e:
+            print(
+                f"⚠️  Segmentation decode failed for {filename} ann#{ann_idx}: {e}. "
+                f"Falling back to bbox-only for this object."
+            )
+            return None
+
     def __getitem__(self, idx):
         img_path = self.image_files[idx]
 
@@ -127,8 +174,11 @@ class SAM3DatasetWithCategories(Dataset):
                 (y + h) * scale_h
             ], dtype=torch.float32)
 
-            # Handle segmentation (simplified - would need proper RLE decoding for production)
-            segment = None
+            # Decode COCO segmentation (polygons or RLE) into a binary mask
+            # at the model's working resolution. NEAREST preserves binary edges.
+            segment = self._decode_segmentation(
+                ann.get('segmentation'), orig_h, orig_w, filename, i
+            )
 
             obj = Object(
                 bbox=box_tensor,
