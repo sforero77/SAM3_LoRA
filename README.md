@@ -1,5 +1,20 @@
 # SAM3-LoRA: Efficient Fine-Tuning with Low-Rank Adaptation
 
+> ## 📍 Canonical entry point: [`AERIAL_LORA_GUIDE.md`](./AERIAL_LORA_GUIDE.md)
+>
+> The repo is now organised as a **method** for training per-class SAM3 LoRA
+> specialists (one LoRA per class: buildings, vegetation, avocado trees, …)
+> on aerial / satellite tiles. Start there for the input contract, the
+> one-line train command, and the one-line predict command.
+>
+> Active pipeline at the repo root: `train_class_lora.py`,
+> `predict_class.py`, `train_sam3_lora_with_categories.py`,
+> `configs/aerial_class_lora.yaml`, `prompts/class_prompts.yaml`.
+>
+> Earlier iterations of training scripts, configs and docs live under
+> `legacy/` and are no longer maintained. The sections below are kept as
+> historical reference.
+
 <div align="center">
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
