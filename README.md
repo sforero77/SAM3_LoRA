@@ -1,19 +1,21 @@
 # SAM3-LoRA: Efficient Fine-Tuning with Low-Rank Adaptation
 
-> ## 📍 Canonical entry point: [`AERIAL_LORA_GUIDE.md`](./AERIAL_LORA_GUIDE.md)
+> ## 📍 Empieza aquí
 >
-> The repo is now organised as a **method** for training per-class SAM3 LoRA
-> specialists (one LoRA per class: buildings, vegetation, avocado trees, …)
-> on aerial / satellite tiles. Start there for the input contract, the
-> one-line train command, and the one-line predict command.
+> - **[`AERIAL_LORA_GUIDE.md`](./AERIAL_LORA_GUIDE.md)** — guía canónica (inglés, resumen ejecutivo).
+> - **[`docs/README.md`](./docs/README.md)** — manuales de usuario en español (6 manuales: usuario, dataset, entrenamiento, inferencia, clases personalizadas, troubleshooting).
 >
-> Active pipeline at the repo root: `train_class_lora.py`,
+> El repo está organizado como un **método** para entrenar especialistas
+> LoRA por clase de SAM3 (un LoRA por clase: construcciones, vegetación,
+> árboles de aguacate, …) sobre tiles aéreos / satelitales.
+>
+> Pipeline activo en la raíz: `train_class_lora.py`,
 > `predict_class.py`, `train_sam3_lora_with_categories.py`,
 > `configs/aerial_class_lora.yaml`, `prompts/class_prompts.yaml`.
 >
-> Earlier iterations of training scripts, configs and docs live under
-> `legacy/` and are no longer maintained. The sections below are kept as
-> historical reference.
+> Iteraciones anteriores de scripts, configs y docs viven bajo
+> `legacy/` y ya no se mantienen. Las secciones de abajo se conservan
+> como referencia histórica.
 
 <div align="center">
 
