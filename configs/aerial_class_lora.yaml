@@ -1,0 +1,91 @@
+# SAM3 LoRA — aerial / overhead imagery per-class specialist
+# ---------------------------------------------------------------
+# This is the canonical config for the method. It is parameterised
+# by the target class via the {{TARGET_CLASS}} placeholder, which
+# the train_class_lora.py wrapper substitutes at run time.
+#
+# One LoRA per class: provide a COCO dataset whose categories[].name
+# matches {{TARGET_CLASS}} (or contains it + other classes — the
+# single-class filter will keep only the matching annotations).
+# ---------------------------------------------------------------
+
+model:
+  name: "facebook/sam3"
+  cache_dir: null
+
+# LoRA configuration. All components on so vision, text and
+# decoder all adapt — important for unusual classes whose text
+# embedding (e.g. "avocado_tree", "invernadero") needs to be
+# learnt during fine-tuning.
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "out_proj"
+    - "qkv"
+    - "proj"
+    - "fc1"
+    - "fc2"
+    - "c_fc"
+    - "c_proj"
+    - "linear1"
+    - "linear2"
+
+  apply_to_vision_encoder: true
+  apply_to_text_encoder: true
+  apply_to_geometry_encoder: true
+  apply_to_detr_encoder: true
+  apply_to_detr_decoder: true
+  apply_to_mask_decoder: true
+
+training:
+  # The wrapper substitutes these placeholders or overrides them
+  # from CLI flags. You normally do not edit this section by hand.
+  target_class: "{{TARGET_CLASS}}"
+  train_data_path: "{{DATASET_ROOT}}/train"
+  val_data_path: "{{DATASET_ROOT}}/valid"
+
+  batch_size: 1
+  num_workers: 2
+
+  learning_rate: 1.0e-4
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
+  max_grad_norm: 1.0
+
+  num_epochs: 40
+  warmup_steps: 100
+  lr_scheduler: "cosine"
+
+  logging_steps: 10
+  eval_steps: 200
+  save_steps: 500
+  save_total_limit: 3
+
+  mixed_precision: "bf16"
+  seed: 42
+  gradient_accumulation_steps: 4
+
+output:
+  output_dir: "outputs/{{TARGET_CLASS}}_lora"
+  logging_dir: "logs/{{TARGET_CLASS}}"
+  save_lora_only: true
+  push_to_hub: false
+  hub_model_id: null
+
+evaluation:
+  metric: "iou"
+  save_predictions: false
+  compute_metrics_during_training: true
+
+hardware:
+  device: "cuda"
+  dataloader_pin_memory: true
+  use_compile: false

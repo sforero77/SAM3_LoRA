@@ -12,7 +12,7 @@ import os
 import json
 import yaml
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -34,10 +34,11 @@ from lora_layers import LoRAConfig, apply_lora_to_model, save_lora_weights, coun
 class SAM3DatasetWithCategories(Dataset):
     """Dataset that properly uses category names from COCO annotations"""
 
-    def __init__(self, root_dir, coco_file_path=None):
+    def __init__(self, root_dir, coco_file_path=None, target_class: Optional[str] = None):
         self.root_dir = Path(root_dir)
         self.images_dir = self.root_dir / "images"
         self.annotations_dir = self.root_dir / "annotations"
+        self.target_class = target_class
 
         # Load COCO file to get category mappings
         if coco_file_path is None:
@@ -55,10 +56,40 @@ class SAM3DatasetWithCategories(Dataset):
         for cat_id, cat_name in self.categories.items():
             print(f"   - ID {cat_id}: '{cat_name}'")
 
+        # Resolve target class (single-class filter)
+        self._allowed_category_ids = None
+        if target_class is not None:
+            target_norm = target_class.strip().lower()
+            matches = [
+                cid for cid, cname in self.categories.items()
+                if cname.strip().lower() == target_norm
+            ]
+            if not matches:
+                available = sorted(self.categories.values())
+                raise ValueError(
+                    f"target_class='{target_class}' not found in COCO categories. "
+                    f"Available: {available}"
+                )
+            self._allowed_category_ids = set(matches)
+            self.target_category_id = matches[0]
+            self.target_class_name = self.categories[matches[0]]
+            print(
+                f"🎯 Single-class filter active: '{self.target_class_name}' "
+                f"(category_id={self.target_category_id})"
+            )
+
         # Build mapping: image_filename -> list of (bbox, mask, category_id)
+        # Apply single-class filter here if requested.
         self.image_annotations = {}
+        total_anns = 0
+        kept_anns = 0
         for ann in self.coco_data['annotations']:
+            total_anns += 1
             image_id = ann['image_id']
+
+            cat_id = ann.get('category_id', 1)
+            if self._allowed_category_ids is not None and cat_id not in self._allowed_category_ids:
+                continue
 
             # Find image filename
             image_info = next((img for img in self.coco_data['images'] if img['id'] == image_id), None)
@@ -73,14 +104,36 @@ class SAM3DatasetWithCategories(Dataset):
             self.image_annotations[filename].append({
                 'bbox': ann['bbox'],  # [x, y, width, height] in COCO format
                 'segmentation': ann.get('segmentation'),
-                'category_id': ann.get('category_id', 1),
+                'category_id': cat_id,
                 'area': ann.get('area', 0)
             })
+            kept_anns += 1
 
-        # Get image files
-        self.image_files = sorted(list(self.images_dir.glob("*.jpg")) +
-                                  list(self.images_dir.glob("*.png")))
-        print(f"📷 Loaded {len(self.image_files)} images from {self.images_dir}")
+        if self._allowed_category_ids is not None:
+            print(
+                f"🔎 Annotations after class filter: {kept_anns}/{total_anns} kept"
+            )
+
+        # Get image files; drop those without surviving annotations when filtering by class.
+        all_image_files = sorted(list(self.images_dir.glob("*.jpg")) +
+                                 list(self.images_dir.glob("*.png")))
+        if self._allowed_category_ids is not None:
+            self.image_files = [
+                p for p in all_image_files if p.name in self.image_annotations
+            ]
+            print(
+                f"📷 Images after class filter: "
+                f"{len(self.image_files)}/{len(all_image_files)} from {self.images_dir}"
+            )
+        else:
+            self.image_files = all_image_files
+            print(f"📷 Loaded {len(self.image_files)} images from {self.images_dir}")
+
+        if len(self.image_files) == 0:
+            raise RuntimeError(
+                f"No images left in {self.images_dir} after filtering. "
+                f"Check target_class and your COCO annotations."
+            )
 
         self.resolution = 1008
         self.transform = v2.Compose([
@@ -259,9 +312,14 @@ class SAM3DatasetWithCategories(Dataset):
 class SAM3TrainerWithCategories:
     """Trainer that properly uses category names"""
 
-    def __init__(self, config_path):
+    def __init__(self, config_path, target_class: Optional[str] = None):
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
+
+        # Allow target_class to be specified inside the config too; CLI wins.
+        if target_class is None:
+            target_class = self.config.get("training", {}).get("target_class")
+        self.target_class = target_class
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -308,7 +366,8 @@ class SAM3TrainerWithCategories:
         print(f"\n📁 Loading datasets...")
         self.train_dataset = SAM3DatasetWithCategories(
             root_dir=train_path,
-            coco_file_path=train_path / "_annotations.coco.json"
+            coco_file_path=train_path / "_annotations.coco.json",
+            target_class=self.target_class,
         )
 
         # Validation dataset
@@ -316,7 +375,8 @@ class SAM3TrainerWithCategories:
         if val_path.exists() and (val_path / "_annotations.coco.json").exists():
             self.val_dataset = SAM3DatasetWithCategories(
                 root_dir=val_path,
-                coco_file_path=val_path / "_annotations.coco.json"
+                coco_file_path=val_path / "_annotations.coco.json",
+                target_class=self.target_class,
             )
             print(f"✅ Validation data loaded: {len(self.val_dataset)} images")
         else:
@@ -477,8 +537,16 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/crack_detection_config.yaml")
+    parser.add_argument("--config", type=str, default="configs/aerial_class_lora.yaml")
+    parser.add_argument(
+        "--target_class",
+        type=str,
+        default=None,
+        help="If set, train only on annotations whose COCO category name matches "
+             "this string (case-insensitive). Overrides 'training.target_class' "
+             "in the config.",
+    )
     args = parser.parse_args()
 
-    trainer = SAM3TrainerWithCategories(args.config)
+    trainer = SAM3TrainerWithCategories(args.config, target_class=args.target_class)
     trainer.train()
