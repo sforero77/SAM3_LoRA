@@ -10,9 +10,10 @@ This version:
 
 import os
 import json
+import random
 import yaml
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -22,6 +23,13 @@ import numpy as np
 from torchvision.transforms import v2
 from tqdm import tqdm
 from pycocotools import mask as coco_mask
+
+
+# Geometric augmentations safe for nadir / overhead imagery.
+# Each op is invariant under the aerial viewpoint (no horizon to break).
+AUG_OPS = ("identity", "hflip", "vflip", "rot90", "rot180", "rot270")
+
+DEFAULT_PROMPT_REGISTRY = Path(__file__).parent / "prompts" / "class_prompts.yaml"
 
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
@@ -34,11 +42,27 @@ from lora_layers import LoRAConfig, apply_lora_to_model, save_lora_weights, coun
 class SAM3DatasetWithCategories(Dataset):
     """Dataset that properly uses category names from COCO annotations"""
 
-    def __init__(self, root_dir, coco_file_path=None, target_class: Optional[str] = None):
+    def __init__(
+        self,
+        root_dir,
+        coco_file_path=None,
+        target_class: Optional[str] = None,
+        augment: bool = False,
+        prompt_registry_path: Optional[Path] = None,
+        photometric_jitter: bool = True,
+    ):
         self.root_dir = Path(root_dir)
         self.images_dir = self.root_dir / "images"
         self.annotations_dir = self.root_dir / "annotations"
         self.target_class = target_class
+        self.augment = bool(augment)
+        self.photometric_jitter = bool(photometric_jitter) and self.augment
+
+        # Load the prompt synonym registry once. Missing file is non-fatal:
+        # we just fall back to the COCO category name as the prompt.
+        registry_path = prompt_registry_path or DEFAULT_PROMPT_REGISTRY
+        self._prompt_registry = self._load_prompt_registry(registry_path)
+        self._warned_missing_prompts: set = set()
 
         # Load COCO file to get category mappings
         if coco_file_path is None:
@@ -141,6 +165,114 @@ class SAM3DatasetWithCategories(Dataset):
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
         ])
+        # Modest photometric jitter applied only on the train split.
+        self.color_jitter = v2.ColorJitter(brightness=0.15, contrast=0.15) \
+            if self.photometric_jitter else None
+
+        if self.augment:
+            print("🔄 Augmentation enabled: hflip/vflip/rot90/rot180/rot270"
+                  + (" + photometric jitter" if self.photometric_jitter else ""))
+
+    @staticmethod
+    def _load_prompt_registry(path: Path) -> Dict[str, Dict]:
+        if not Path(path).is_file():
+            return {}
+        try:
+            with open(path, "r") as f:
+                data = yaml.safe_load(f) or {}
+            # Normalise keys to lowercase for case-insensitive lookup.
+            return {k.lower(): v for k, v in data.items() if isinstance(v, dict)}
+        except Exception as e:
+            print(f"⚠️  Could not read prompt registry at {path}: {e}")
+            return {}
+
+    def _sample_prompt(self, class_name: str) -> str:
+        """
+        Return a prompt string for the given canonical class name.
+        - augment=True and class in registry → random.choice over synonyms + description.
+        - augment=False and class in registry → first synonym (canonical).
+        - Class not in registry → class_name as-is (with a one-time warning).
+        """
+        key = class_name.strip().lower()
+        entry = self._prompt_registry.get(key)
+        if entry is None:
+            if key not in self._warned_missing_prompts:
+                print(
+                    f"ℹ️  Class '{class_name}' not in prompt registry — using "
+                    f"the COCO name as-is. Add it to prompts/class_prompts.yaml "
+                    f"to enable prompt augmentation."
+                )
+                self._warned_missing_prompts.add(key)
+            return class_name
+
+        synonyms = list(entry.get("synonyms") or [])
+        if not synonyms:
+            synonyms = [class_name]
+
+        if self.augment:
+            pool = list(synonyms) + list(entry.get("description") or [])
+            return random.choice(pool)
+        return synonyms[0]
+
+    @staticmethod
+    def _pick_aug_op() -> str:
+        return random.choice(AUG_OPS)
+
+    @staticmethod
+    def _apply_aug_to_pil(img: PILImage.Image, op: str) -> PILImage.Image:
+        if op == "identity":
+            return img
+        if op == "hflip":
+            return img.transpose(PILImage.FLIP_LEFT_RIGHT)
+        if op == "vflip":
+            return img.transpose(PILImage.FLIP_TOP_BOTTOM)
+        if op == "rot90":
+            return img.transpose(PILImage.ROTATE_270)  # PIL ROTATE_270 == 90° clockwise
+        if op == "rot180":
+            return img.transpose(PILImage.ROTATE_180)
+        if op == "rot270":
+            return img.transpose(PILImage.ROTATE_90)   # PIL ROTATE_90 == 90° counter-clockwise
+        raise ValueError(f"unknown aug op: {op}")
+
+    @staticmethod
+    def _apply_aug_to_bbox(
+        bbox_xyxy: torch.Tensor, op: str, size: int
+    ) -> torch.Tensor:
+        """Transform a single [x1,y1,x2,y2] bbox by op, in a SIZE×SIZE image."""
+        x1, y1, x2, y2 = bbox_xyxy.tolist()
+        s = float(size)
+        if op == "identity":
+            nx1, ny1, nx2, ny2 = x1, y1, x2, y2
+        elif op == "hflip":
+            nx1, ny1, nx2, ny2 = s - x2, y1, s - x1, y2
+        elif op == "vflip":
+            nx1, ny1, nx2, ny2 = x1, s - y2, x2, s - y1
+        elif op == "rot90":   # clockwise 90: (x,y) -> (s-y, x)
+            nx1, ny1, nx2, ny2 = s - y2, x1, s - y1, x2
+        elif op == "rot180":  # (x,y) -> (s-x, s-y)
+            nx1, ny1, nx2, ny2 = s - x2, s - y2, s - x1, s - y1
+        elif op == "rot270":  # counter-clockwise 90: (x,y) -> (y, s-x)
+            nx1, ny1, nx2, ny2 = y1, s - x2, y2, s - x1
+        else:
+            raise ValueError(f"unknown aug op: {op}")
+        return torch.tensor([nx1, ny1, nx2, ny2], dtype=torch.float32)
+
+    @staticmethod
+    def _apply_aug_to_mask(mask: torch.Tensor, op: str) -> torch.Tensor:
+        if mask is None or op == "identity":
+            return mask
+        if op == "hflip":
+            return torch.flip(mask, dims=[-1])
+        if op == "vflip":
+            return torch.flip(mask, dims=[-2])
+        # torch.rot90(k=1) rotates counter-clockwise; we want clockwise for rot90.
+        if op == "rot90":
+            return torch.rot90(mask, k=-1, dims=[-2, -1])
+        if op == "rot180":
+            return torch.rot90(mask, k=2, dims=[-2, -1])
+        if op == "rot270":
+            return torch.rot90(mask, k=1, dims=[-2, -1])
+        raise ValueError(f"unknown aug op: {op}")
 
     def __len__(self):
         return len(self.image_files)
@@ -198,8 +330,16 @@ class SAM3DatasetWithCategories(Dataset):
         pil_image = PILImage.open(img_path).convert("RGB")
         orig_w, orig_h = pil_image.size
 
-        # Resize image
+        # Resize image to the model's working resolution
         pil_image = pil_image.resize((self.resolution, self.resolution), PILImage.BILINEAR)
+
+        # Pick a single augmentation op for this sample so image, bboxes and
+        # masks all transform consistently. Geometric op first, photometric
+        # jitter (image only) second.
+        aug_op = self._pick_aug_op() if self.augment else "identity"
+        pil_image = self._apply_aug_to_pil(pil_image, aug_op)
+        if self.color_jitter is not None:
+            pil_image = self.color_jitter(pil_image)
 
         # Transform to tensor
         image_tensor = self.transform(pil_image)
@@ -219,7 +359,7 @@ class SAM3DatasetWithCategories(Dataset):
             # COCO bbox format: [x, y, width, height]
             x, y, w, h = ann['bbox']
 
-            # Convert to [x1, y1, x2, y2] and scale
+            # Convert to [x1, y1, x2, y2] and scale to working resolution
             box_tensor = torch.tensor([
                 x * scale_w,
                 y * scale_h,
@@ -232,6 +372,10 @@ class SAM3DatasetWithCategories(Dataset):
             segment = self._decode_segmentation(
                 ann.get('segmentation'), orig_h, orig_w, filename, i
             )
+
+            # Apply the same geometric op to bbox and mask
+            box_tensor = self._apply_aug_to_bbox(box_tensor, aug_op, self.resolution)
+            segment = self._apply_aug_to_mask(segment, aug_op)
 
             obj = Object(
                 bbox=box_tensor,
@@ -262,11 +406,15 @@ class SAM3DatasetWithCategories(Dataset):
         for obj, cat_id in zip(objects, category_ids):
             cat_id_to_object_ids[cat_id].append(obj.object_id)
 
-        # Create one query per category
+        # Create one query per category. The prompt text is sampled from
+        # the synonym registry (with augmentation on the train split) so
+        # the LoRA learns the visual concept rather than memorising one
+        # exact word.
         queries = []
         if len(cat_id_to_object_ids) > 0:
             for cat_id, obj_ids in cat_id_to_object_ids.items():
-                query_text = self.categories.get(cat_id, "object")
+                class_name = self.categories.get(cat_id, "object")
+                query_text = self._sample_prompt(class_name)
                 query = FindQueryLoaded(
                     query_text=query_text,
                     image_id=0,
@@ -368,15 +516,17 @@ class SAM3TrainerWithCategories:
             root_dir=train_path,
             coco_file_path=train_path / "_annotations.coco.json",
             target_class=self.target_class,
+            augment=True,
         )
 
-        # Validation dataset
+        # Validation dataset (no augmentation — deterministic)
         val_path = Path(train_cfg.get("val_data_path", "data/valid"))
         if val_path.exists() and (val_path / "_annotations.coco.json").exists():
             self.val_dataset = SAM3DatasetWithCategories(
                 root_dir=val_path,
                 coco_file_path=val_path / "_annotations.coco.json",
                 target_class=self.target_class,
+                augment=False,
             )
             print(f"✅ Validation data loaded: {len(self.val_dataset)} images")
         else:
