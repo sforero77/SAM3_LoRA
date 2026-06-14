@@ -535,7 +535,28 @@ def load_lora_weights(model: nn.Module, load_path: str):
     Args:
         model: Model with LoRA layers
         load_path: Path to LoRA weights
+
+    Loads onto CPU first (``map_location``) so GPU-trained weights restore on a
+    CPU-only host, then ``load_state_dict`` copies them into the already-placed
+    model parameters. Reports how many saved LoRA tensors actually matched the
+    model, and raises if none did — that almost always means the inference LoRA
+    config differs from the training one, which would otherwise silently produce
+    an un-adapted model (empty / base-quality output) with no error.
     """
-    lora_state_dict = torch.load(load_path)
-    model.load_state_dict(lora_state_dict, strict=False)
-    print(f"Loaded LoRA weights from {load_path}")
+    lora_state_dict = torch.load(load_path, map_location="cpu")
+    result = model.load_state_dict(lora_state_dict, strict=False)
+    saved = len(lora_state_dict)
+    unexpected = len(result.unexpected_keys)
+    matched = saved - unexpected
+    print(f"Loaded LoRA weights from {load_path} "
+          f"({matched}/{saved} tensors matched the model)")
+    if matched == 0:
+        raise RuntimeError(
+            f"None of the {saved} saved LoRA tensors matched any module in the "
+            f"model. The inference LoRA config almost certainly differs from the "
+            f"one used in training (rank/alpha/target_modules/apply_to_*). Load "
+            f"the resolved_config.yaml written next to the weights."
+        )
+    if unexpected:
+        print(f"⚠️  {unexpected} saved LoRA tensor(s) had no matching module and "
+              f"were ignored — possible config drift between train and inference.")

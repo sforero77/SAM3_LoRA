@@ -10,12 +10,12 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setup(
     name="sam3-lora",
     version="0.1.0",
-    author="Your Name",
-    author_email="your.email@example.com",
-    description="Standalone LoRA fine-tuning for SAM3",
+    author="GeoAI LATAM",
+    description="Per-class LoRA fine-tuning of SAM3 for aerial / satellite imagery",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/sam3_lora",
+    license="Apache-2.0",
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -25,13 +25,16 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "License :: OSI Approved :: Apache Software License",
-        "Operating System :: OS Independent",
+        # Training requires CUDA; triton (a hard dep of the loss path) ships no
+        # Windows wheels, so practical training is Linux+CUDA only.
+        "Operating System :: POSIX :: Linux",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
     python_requires=">=3.8",
     install_requires=[
         "torch>=2.7.0",
         "torchvision>=0.19.0",
+        'triton>=2.0.0 ; platform_system == "Linux"',
         "transformers>=4.48.0",
         "huggingface-hub>=0.26.0",
         "Pillow>=10.0.0",

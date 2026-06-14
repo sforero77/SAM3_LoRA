@@ -57,6 +57,14 @@ datasets/
 *.json
 !*_annotations.coco.json
 
+# Keep the committed tiny smoke-test fixture — these exceptions must come
+# AFTER the *.jpg/*.png/*.json rules above so the fixture tiles survive.
+!samples/tiny/**
+!samples/tiny/**/
+
+# Stray dataset archives (don't commit large/third-party data dumps)
+*.zip
+
 # Models
 *.pth
 *.pt

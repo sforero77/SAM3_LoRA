@@ -197,7 +197,7 @@ Para métricas formales (cgF1, mAP, mIoU):
 python validate_sam3_lora.py \
   --config outputs/avocado_lora/resolved_config.yaml \
   --weights outputs/avocado_lora/best_lora_weights.pt \
-  --val_data data/avocado/valid
+  --val_data_dir data/avocado/valid
 ```
 
 Este script no es parte del flujo canónico — es un benchmark que se
@@ -210,9 +210,12 @@ nativa de SAM3), cgF1@50, cgF1@75 y mAP.
 python compare_lora_base.py \
   --config outputs/avocado_lora/resolved_config.yaml \
   --weights outputs/avocado_lora/best_lora_weights.pt \
-  --image samples/tiny/valid/images/tile_0001.png \
-  --prompt "avocado_tree"
+  --image samples/tiny/valid/images/tile_0101.png \
+  --data-dir samples/tiny/valid \
+  --output outputs/avocado_lora/compare.png
 ```
 
-Genera lado-a-lado del SAM3 base vs. SAM3+LoRA. Útil para verificar
-visualmente que el adaptador esté aportando algo.
+Genera un PNG lado-a-lado del SAM3 base vs. SAM3+LoRA en `--output`. Útil
+para verificar visualmente que el adaptador esté aportando algo.
+(`--image`, `--data-dir` y `--output` son obligatorios; herramienta de
+debug, no parte del flujo canónico.)

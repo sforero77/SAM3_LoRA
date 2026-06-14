@@ -19,6 +19,30 @@ This is the canonical entry point for the repository. Everything else under
 
 ---
 
+## 0. Prerequisites (do this first)
+
+1. **Request access to the gated SAM3 model.** SAM3 is a gated Hugging Face
+   model. Go to <https://huggingface.co/facebook/sam3>, click **Request
+   Access** and accept the license. Approval is usually quick but is
+   **required** — without it the first training/inference run fails with a
+   `GatedRepoError` (HTTP 401/403), even after you log in.
+2. **Authenticate.** Run `hf auth login` (or `huggingface-cli login`) and paste
+   a token from <https://huggingface.co/settings/tokens>, or
+   `export HF_TOKEN=...`. The SAM3 checkpoint (several GB) downloads on the
+   first run and is cached.
+3. **Hardware / OS.** Training needs an NVIDIA **CUDA GPU (≈16 GB+)** on
+   **Linux**. The loss path uses Triton GPU kernels, which have no Windows
+   wheels; on Windows the code stays importable (pure-PyTorch fallbacks) but
+   training itself still requires CUDA. There is no usable CPU training path.
+4. **Install + verify.**
+
+   ```bash
+   pip install -r requirements.txt          # or: pip install -e .
+   python scripts/check_install.py          # pre-flight: imports, config, CUDA
+   ```
+
+---
+
 ## 1. Input contract (what you must provide)
 
 The pipeline expects RGB tiles + a COCO annotation file per split. You
@@ -216,13 +240,16 @@ Three steps. No code changes needed.
 Use this to confirm the pipeline runs end-to-end before throwing real
 data at it.
 
-1. Populate `samples/tiny/train/images/` (5 tiles) and
-   `samples/tiny/valid/images/` (2 tiles), all 1024×1024 RGB.
-2. Hand-label each tile with a single class (e.g. `building`) and write
-   `samples/tiny/train/_annotations.coco.json` and
-   `samples/tiny/valid/_annotations.coco.json` following the contract
-   above. Use polygons, not just bboxes.
-3. Train for 3 epochs:
+1. Generate the fixture (no real data or hand-labelling needed) — this writes
+   5 train + 2 valid RGB tiles with polygon masks for class `building`:
+
+   ```bash
+   python scripts/make_tiny_sample.py
+   ```
+
+   (If you cloned the repo, the fixture may already be committed under
+   `samples/tiny/`; the generator just (re)creates it deterministically.)
+2. Train for 3 epochs:
 
    ```bash
    python train_class_lora.py \
@@ -235,7 +262,7 @@ data at it.
    Pass criteria: completes in < 5 min on a single GPU;
    `outputs/tiny_test/best_lora_weights.pt` exists and is < 50 MB.
 
-4. Predict:
+3. Predict:
 
    ```bash
    python predict_class.py \
@@ -247,7 +274,7 @@ data at it.
 
    Pass criteria: at least one mask PNG is not all-zero.
 
-5. Smoke-test the class filter: prepare a multi-class COCO and train with
+4. Smoke-test the class filter: prepare a multi-class COCO and train with
    `--target_class building`; the log should show
    `N images → M after filtering to class 'building'`.
 
@@ -262,12 +289,13 @@ data at it.
 | `predict_class.py` | Canonical batch inference for a class LoRA. |
 | `inference_lora.py` | Lower-level inference (used by `predict_class.py`). |
 | `lora_layers.py` | LoRA injection into SAM3 components. |
-| `validate_sam3_lora.py` | cgF1 / mAP evaluation. |
+| `validate_sam3_lora.py` | cgF1 / mAP evaluation (run once, post-training). |
 | `configs/aerial_class_lora.yaml` | Parameterised template. |
 | `prompts/class_prompts.yaml` | Extensible class → synonyms registry. |
-| `sam3/` | SAM3 model code (Facebook). |
-| `sam3_lora/` | Project-specific LoRA helpers and dataset. |
-| `legacy/` | Earlier scripts, configs and docs — not maintained. |
+| `scripts/check_install.py` | Pre-flight: imports, config, CUDA. |
+| `scripts/make_tiny_sample.py` | Generates the `samples/tiny/` smoke-test fixture. |
+| `sam3/` | SAM3 model code (Facebook — see NOTICE). |
+| `legacy/` | Earlier scripts, configs, dup LoRA/dataset code — not maintained. |
 
 ---
 

@@ -2,7 +2,14 @@
 torch>=2.7.0
 torchvision>=0.19.0
 
-# Transformers library with SAM3 support
+# Triton GPU kernels — required by the training/loss path on Linux+CUDA.
+# There are no Windows wheels; on Windows the code falls back to slower
+# pure-PyTorch implementations (training itself still needs a CUDA GPU).
+triton>=2.0.0 ; platform_system == "Linux"
+
+# transformers: only used by the legacy inference.py path, NOT the canonical
+# train_class_lora.py / predict_class.py pipeline (which loads SAM3 directly
+# via sam3/model_builder.py). Kept for the legacy scripts.
 transformers>=4.48.0
 
 # Hugging Face Hub

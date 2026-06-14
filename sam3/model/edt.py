@@ -3,8 +3,42 @@
 """Triton kernel for euclidean distance transform (EDT)"""
 
 import torch
-import triton
-import triton.language as tl
+
+try:
+    import triton
+    import triton.language as tl
+
+    _HAS_TRITON = True
+except Exception:  # triton has no Windows wheels — keep this module importable.
+    _HAS_TRITON = False
+
+    def _triton_unavailable(*args, **kwargs):
+        raise RuntimeError(
+            "triton is not available on this platform; the GPU EDT kernel cannot "
+            "run. A pure-CPU fallback (edt_triton) is provided instead."
+        )
+
+    class _TLShim:
+        # `constexpr` is read at kernel-definition time for annotations; every
+        # other attribute is only touched at call time, which never happens on
+        # the fallback path (we override edt_triton below).
+        constexpr = None
+
+        def __getattr__(self, name):
+            return _triton_unavailable
+
+    class _TritonShim:
+        @staticmethod
+        def jit(fn=None, **kwargs):
+            def _decorator(f):
+                return f
+            return _decorator(fn) if callable(fn) else _decorator
+
+        def __getattr__(self, name):
+            return _triton_unavailable
+
+    tl = _TLShim()
+    triton = _TritonShim()
 
 """
 Disclaimer: This implementation is not meant to be extremely efficient. A CUDA kernel would likely be more efficient.
@@ -171,3 +205,25 @@ def edt_triton(data: torch.Tensor):
     )
     # don't forget to take sqrt at the end
     return output.sqrt()
+
+
+if not _HAS_TRITON:
+
+    def edt_triton(data: torch.Tensor):  # noqa: F811 - CPU fallback override
+        """Pure-CPU Euclidean Distance Transform (no triton).
+
+        Mirrors a batched ``cv2.distanceTransform(x, DIST_L2)``: for each pixel
+        it returns the L2 distance to the nearest zero pixel. Used when triton
+        is unavailable (e.g. Windows). Slower than the GPU kernel but keeps the
+        module importable and functional on CPU.
+        """
+        assert data.dim() == 3
+        import numpy as np
+        from scipy import ndimage
+
+        device = data.device
+        arr = data.detach().to("cpu").numpy().astype(bool)
+        out = np.empty(arr.shape, dtype=np.float32)
+        for b in range(arr.shape[0]):
+            out[b] = ndimage.distance_transform_edt(arr[b])
+        return torch.from_numpy(out).to(device)

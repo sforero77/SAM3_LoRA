@@ -26,6 +26,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+import yaml
 from PIL import Image as PILImage
 from torchvision.ops import nms
 
@@ -33,6 +34,27 @@ from inference_lora import SAM3LoRAInference
 
 
 VALID_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
+DEFAULT_PROMPT_REGISTRY = Path(__file__).parent / "prompts" / "class_prompts.yaml"
+
+
+def _resolve_prompt(class_name: str, registry_path: Path) -> str:
+    """Map a canonical class name to the prompt the LoRA was trained with.
+
+    Training samples prompts from prompts/class_prompts.yaml and uses
+    ``synonyms[0]`` as the canonical (non-augmented) prompt. Mirroring that here
+    keeps the train-time and predict-time prompts consistent. Falls back to the
+    raw class name when the registry or the entry is missing.
+    """
+    try:
+        with open(registry_path, "r") as f:
+            registry = yaml.safe_load(f) or {}
+    except Exception:
+        return class_name
+    entry = registry.get(class_name.strip().lower())
+    if not isinstance(entry, dict):
+        return class_name
+    synonyms = entry.get("synonyms") or []
+    return synonyms[0] if synonyms else class_name
 
 
 def collect_tiles(input_dir: Path) -> List[Path]:
@@ -146,9 +168,21 @@ def run(args):
         print(f"❌ No image tiles found in {input_dir} (extensions: {VALID_EXTS})")
         sys.exit(2)
 
+    # Resolve the class prompt: prefer --class_name, else fall back to the
+    # target_class persisted in the (resolved) config, then map it through the
+    # prompt registry so it matches how training prompted the model.
+    with open(config_path, "r") as f:
+        cfg_for_prompt = yaml.safe_load(f) or {}
+    class_name = args.class_name or cfg_for_prompt.get("training", {}).get("target_class")
+    if not class_name:
+        print("❌ No --class_name given and the config has no training.target_class. "
+              "Pass --class_name explicitly.")
+        sys.exit(2)
+    prompt = _resolve_prompt(class_name, Path(args.prompts_yaml))
+
     print(f"🔧 Loading model with weights from {weights_path}")
     print(f"📝 Config: {config_path}")
-    print(f"🎯 Class prompt: {args.class_name!r}")
+    print(f"🎯 Class: {class_name!r}  →  SAM3 prompt: {prompt!r}")
     print(f"📁 Tiles: {len(tiles)} from {input_dir}")
     print(f"📦 Output: {output_dir}\n")
 
@@ -163,7 +197,7 @@ def run(args):
     for tile_idx, tile_path in enumerate(tiles, start=1):
         print(f"[{tile_idx}/{len(tiles)}] {tile_path.name}")
         try:
-            preds = inferencer.predict(str(tile_path), text_prompt=args.class_name)
+            preds = inferencer.predict(str(tile_path), text_prompt=prompt)
         except Exception as e:
             print(f"  ⚠️  inference failed: {e}")
             continue
@@ -215,7 +249,7 @@ def run(args):
     if args.coco_output:
         coco = {
             "images": coco_images,
-            "categories": [{"id": 1, "name": args.class_name}],
+            "categories": [{"id": 1, "name": class_name}],
             "annotations": coco_annotations,
         }
         coco_path = output_dir / "predictions.coco.json"
@@ -239,9 +273,11 @@ def main():
     parser.add_argument(
         "--class_name",
         type=str,
-        required=True,
-        help="Class prompt used at inference time. Should match the canonical "
-             "class the LoRA was trained on (e.g. 'avocado_tree').",
+        default=None,
+        help="Canonical class the LoRA was trained on (e.g. 'avocado_tree'). "
+             "Optional: if omitted, it is read from training.target_class in the "
+             "resolved config. It is mapped through prompts/class_prompts.yaml so "
+             "the inference prompt matches how training prompted the model.",
     )
     parser.add_argument(
         "--input_dir",
@@ -261,6 +297,13 @@ def main():
         default=None,
         help="Override path to the LoRA config YAML. Defaults to "
              "<lora_weights>/../resolved_config.yaml.",
+    )
+    parser.add_argument(
+        "--prompts_yaml",
+        type=Path,
+        default=DEFAULT_PROMPT_REGISTRY,
+        help="Prompt registry used to map the class name to its canonical "
+             "synonym (default: prompts/class_prompts.yaml).",
     )
     parser.add_argument(
         "--threshold",

@@ -157,20 +157,21 @@ Para inferencia a gran escala (10k+ tiles), considera:
 - Pre-cargar todos los tiles en RAM antes de iterar.
 - TensorRT / `torch.compile` (no probado aquí, pero compatible).
 
-## 10. Inferencia con SAM3 base (sin LoRA)
+## 10. Baseline: SAM3 base (sin LoRA)
 
-Útil como baseline para comparar:
+Para tener un punto de referencia (qué tan bien lo hace SAM3 sin afinar),
+evalúa el modelo base sobre tu set de validación:
 
 ```bash
-python infer_sam.py \
-  --image tile_0001.png \
-  --prompt "building" \
-  --output_dir baseline/
+python validate_sam3_lora.py \
+  --val_data_dir data/avocado/valid \
+  --use-base-model
 ```
 
-`infer_sam.py` no usa LoRA — es el modelo base de Facebook directo. Es
-tu punto de referencia: si el LoRA no mejora sobre esto, algo está mal
-en el entrenamiento.
+No requiere `--config` ni `--weights`. Reporta cgF1 / mAP del SAM3
+original. Si tu LoRA no mejora estas métricas, algo está mal en el
+entrenamiento. Para una comparación **visual** lado-a-lado base vs. LoRA,
+usa `compare_lora_base.py` (sección 11).
 
 ## 11. Visualización rápida (debug)
 

@@ -120,7 +120,10 @@ class SAM3DatasetWithCategories(Dataset):
             if not image_info:
                 continue
 
-            filename = image_info['file_name']
+            # Key by basename so a subdir-prefixed file_name in the COCO
+            # (e.g. "images/tile_0001.png", common from some exporters) still
+            # matches the on-disk tile, which is compared by p.name below.
+            filename = os.path.basename(str(image_info['file_name']).replace("\\", "/"))
 
             if filename not in self.image_annotations:
                 self.image_annotations[filename] = []
@@ -139,8 +142,15 @@ class SAM3DatasetWithCategories(Dataset):
             )
 
         # Get image files; drop those without surviving annotations when filtering by class.
-        all_image_files = sorted(list(self.images_dir.glob("*.jpg")) +
-                                 list(self.images_dir.glob("*.png")))
+        # Discover tiles case-insensitively across every supported RGB extension
+        # (the input contract advertises .jpg/.png/.tif). iterdir + suffix.lower()
+        # avoids both the case-sensitivity gap on Linux and the double-counting a
+        # list of per-extension globs would cause on case-insensitive filesystems.
+        valid_exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+        all_image_files = sorted(
+            p for p in self.images_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in valid_exts
+        )
         if self._allowed_category_ids is not None:
             self.image_files = [
                 p for p in all_image_files if p.name in self.image_annotations
@@ -511,6 +521,13 @@ class SAM3TrainerWithCategories:
         train_cfg = self.config["training"]
         train_path = Path(train_cfg["train_data_path"])
 
+        # Mixed precision + gradient accumulation — honor the resolved config
+        # (previously these keys were written but ignored, so training silently
+        # ran fp32 with batch_size=1 regardless of what the config claimed).
+        self.mixed_precision = str(train_cfg.get("mixed_precision", "no")).lower()
+        self.grad_accum_steps = max(1, int(train_cfg.get("gradient_accumulation_steps", 1)))
+        self.max_grad_norm = float(train_cfg.get("max_grad_norm", 1.0))
+
         print(f"\n📁 Loading datasets...")
         self.train_dataset = SAM3DatasetWithCategories(
             root_dir=train_path,
@@ -568,8 +585,10 @@ class SAM3TrainerWithCategories:
             eps=train_cfg.get("adam_epsilon", 1e-8)
         )
 
-        # LR Scheduler
-        total_steps = len(self.train_loader) * train_cfg["num_epochs"]
+        # LR Scheduler — one scheduler step per *optimizer* step (i.e. per
+        # gradient-accumulation window), so T_max counts effective steps.
+        steps_per_epoch = max(1, len(self.train_loader) // self.grad_accum_steps)
+        total_steps = steps_per_epoch * train_cfg["num_epochs"]
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
             T_max=total_steps
@@ -622,44 +641,55 @@ class SAM3TrainerWithCategories:
         self.model.train()
         total_loss = 0
 
+        # bf16 autocast needs no GradScaler (unlike fp16); enabled only on CUDA.
+        use_amp = self.mixed_precision == "bf16" and self.device.type == "cuda"
+        accum = self.grad_accum_steps
+        num_batches = len(self.train_loader)
+
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.num_epochs}")
-        for batch in pbar:
+        self.optimizer.zero_grad()
+        for step, batch in enumerate(pbar):
             input_batch = batch["input"]
 
             # Move to device
             input_batch = self._move_to_device(input_batch, self.device)
 
-            # Forward
-            outputs = self.model(input_batch)
+            # Forward (under autocast when bf16 mixed precision is requested)
+            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
+                outputs = self.model(input_batch)
+                loss_dict = self.loss_fn(outputs, input_batch)
+                loss = loss_dict["loss"]
 
-            # Compute loss
-            loss_dict = self.loss_fn(outputs, input_batch)
-            loss = loss_dict["loss"]
+            # Scale so accumulated grads over `accum` micro-batches equal the
+            # average gradient of one effective batch (size batch_size × accum).
+            (loss / accum).backward()
 
-            # Backward
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-            self.scheduler.step()
+            # Step the optimizer once per accumulation window (and at epoch end).
+            if (step + 1) % accum == 0 or (step + 1) == num_batches:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.max_grad_norm)
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
 
             total_loss += loss.item()
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-        return total_loss / len(self.train_loader)
+        return total_loss / max(1, len(self.train_loader))
 
     def validate_epoch(self, epoch):
         self.model.eval()
         total_loss = 0
 
+        use_amp = self.mixed_precision == "bf16" and self.device.type == "cuda"
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
                 input_batch = batch["input"]
                 input_batch = self._move_to_device(input_batch, self.device)
 
-                outputs = self.model(input_batch)
-                loss_dict = self.loss_fn(outputs, input_batch)
-                loss = loss_dict["loss"]
+                with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
+                    outputs = self.model(input_batch)
+                    loss_dict = self.loss_fn(outputs, input_batch)
+                    loss = loss_dict["loss"]
 
                 total_loss += loss.item()
 

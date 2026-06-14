@@ -25,7 +25,19 @@ como prompt (`"building"`, `"avocado_tree"`, etc.).
 | PyTorch | ≥ 2.7 |
 | Acceso internet | Primera descarga del modelo `facebook/sam3` desde Hugging Face. |
 
+> **Sistema operativo:** el entrenamiento requiere **Linux + CUDA**. La ruta
+> de pérdida usa kernels de Triton, que no tienen wheels para Windows; en
+> Windows el código sigue siendo importable (fallbacks en PyTorch puro) pero
+> el entrenamiento igual necesita una GPU CUDA. No hay ruta de CPU usable.
+
 ## 3. Instalación
+
+> **Antes de nada — acceso a SAM3 (obligatorio).** `facebook/sam3` es un
+> modelo *gated* en Hugging Face. Entra a
+> <https://huggingface.co/facebook/sam3>, pulsa **Request Access** y acepta
+> la licencia. La aprobación suele ser rápida pero es **obligatoria**: sin
+> ella el primer entrenamiento/inferencia falla con `GatedRepoError`
+> (HTTP 401/403) aunque hayas hecho login.
 
 ```bash
 git clone https://github.com/sforero77/SAM3_LoRA.git
@@ -36,6 +48,9 @@ python -m venv .venv
 source .venv/bin/activate
 
 pip install -r requirements.txt
+
+# Autentícate en Hugging Face (después de tener el acceso aprobado)
+hf auth login        # o:  export HF_TOKEN=tu_token
 
 # Verifica que todo importa y CUDA esté visible
 python scripts/check_install.py
@@ -127,10 +142,11 @@ Detalle en **[MANUAL_CLASES.md](./MANUAL_CLASES.md)**.
 ## 6. Smoke test antes de gastar GPU-hours
 
 Ver sección 6 del [AERIAL_LORA_GUIDE.md](../AERIAL_LORA_GUIDE.md) o
-`samples/tiny/README.md`. Resumen: 5 + 2 tiles anotados a mano, 3 epochs,
-en menos de 5 minutos debe producir un LoRA < 50 MB y una predicción
-no vacía. Si esto no pasa, el problema está en tu setup, no en el
-modelo.
+`samples/tiny/README.md`. Resumen: genera el dataset de prueba con
+`python scripts/make_tiny_sample.py` (5 + 2 tiles sintéticos con máscaras,
+sin etiquetar nada a mano), entrena 3 epochs, y en menos de 5 minutos debe
+producir un LoRA < 50 MB y una predicción no vacía. Si esto no pasa, el
+problema está en tu setup, no en el modelo.
 
 ## 7. Si algo no funciona
 

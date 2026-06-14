@@ -3,9 +3,41 @@
 """Triton kernel for faster and memory efficient sigmoid focal loss"""
 
 import torch
-import triton
-import triton.language as tl
-from torch._inductor.runtime.triton_helpers import libdevice
+
+try:
+    import triton
+    import triton.language as tl
+    from torch._inductor.runtime.triton_helpers import libdevice
+
+    _HAS_TRITON = True
+except Exception:  # triton has no Windows wheels — keep this module importable.
+    _HAS_TRITON = False
+
+    def _triton_unavailable(*args, **kwargs):
+        raise RuntimeError("triton is not available on this platform")
+
+    class _TLShim:
+        # `constexpr` is read at kernel-definition time for annotations; every
+        # other attribute is only touched at call time, which never happens on
+        # the fallback path (the public functions are overridden below).
+        constexpr = None
+
+        def __getattr__(self, name):
+            return _triton_unavailable
+
+    class _TritonShim:
+        @staticmethod
+        def jit(fn=None, **kwargs):
+            def _decorator(f):
+                return f
+            return _decorator(fn) if callable(fn) else _decorator
+
+        def __getattr__(self, name):
+            return _triton_unavailable
+
+    tl = _TLShim()
+    triton = _TritonShim()
+    libdevice = None
 
 """
 
@@ -319,3 +351,26 @@ class SigmoidFocalLossReduced(torch.autograd.Function):
 
 
 triton_sigmoid_focal_loss_reduce = SigmoidFocalLossReduced.apply
+
+
+if not _HAS_TRITON:
+    # Pure-PyTorch fallback (Lin et al. 2017 focal loss). Numerically matches
+    # the triton kernels above and runs on CPU, so the loss is usable without
+    # triton (e.g. on Windows / CPU). Autograd handles the backward pass.
+    import torch.nn.functional as _F
+
+    def _torch_sigmoid_focal_loss(inputs, targets, alpha=0.25, gamma=2):
+        p = torch.sigmoid(inputs)
+        ce = _F.binary_cross_entropy_with_logits(inputs, targets, reduction="none")
+        p_t = p * targets + (1 - p) * (1 - targets)
+        loss = ce * ((1 - p_t) ** gamma)
+        if alpha >= 0:
+            alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+            loss = alpha_t * loss
+        return loss
+
+    def triton_sigmoid_focal_loss(inputs, targets, alpha=0.25, gamma=2):  # noqa: F811
+        return _torch_sigmoid_focal_loss(inputs, targets, alpha, gamma)
+
+    def triton_sigmoid_focal_loss_reduce(inputs, targets, alpha=0.25, gamma=2):  # noqa: F811
+        return _torch_sigmoid_focal_loss(inputs, targets, alpha, gamma).sum()

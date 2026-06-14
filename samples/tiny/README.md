@@ -21,6 +21,19 @@ Both COCO files must follow the input contract from the guide:
 `segmentation` field (polygon list or RLE). Polygons are easier to
 hand-label quickly with tools like Roboflow / CVAT / LabelMe.
 
+## Generate the fixture (no real data needed)
+
+You don't have to hand-label anything: a generator synthesises a valid
+`building` dataset (5 train + 2 valid RGB tiles with polygon masks) into
+this directory:
+
+```bash
+python scripts/make_tiny_sample.py
+```
+
+This writes `train/` and `valid/` matching the layout above so the
+section-6 smoke test below runs as-is.
+
 ## Run the smoke test
 
 ```bash
@@ -44,5 +57,5 @@ Pass criteria:
 - At least one prediction PNG in `outputs/tiny_test/preds/masks/` is
   not all-zero.
 
-Tiles and annotations are not committed to the repo; populate this
-directory locally before running the test.
+If the tiles are not already present, generate them first with
+`python scripts/make_tiny_sample.py` (see above).

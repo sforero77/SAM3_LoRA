@@ -143,11 +143,16 @@ desactiva la pérdida de máscara para esa anotación específica.
 
 ## 5. Convertir desde otros formatos
 
-El repo ya incluye:
+La forma recomendada es exportar **directamente como COCO Segmentation**
+desde Roboflow / CVAT: ese export ya cumple el contrato de entrada
+(`train/images/ + _annotations.coco.json`, polígonos por anotación) y no
+requiere conversión.
 
-- `convert_roboflow_to_coco.py` — Roboflow export → COCO consolidado.
-- `prepare_data.py` — utilidades para YOLO ↔ COCO, validación de
-  dataset, conversión de máscaras.
+> ⚠️ Los scripts antiguos `prepare_data.py` y
+> `convert_roboflow_to_coco.py` se movieron a `legacy/` y **no** debes
+> usarlos: emiten un formato distinto (un JSON por imagen) o colapsan
+> todas las clases a `category_id=1 name='object'`, lo que rompe el
+> esquema por-clase de este método.
 
 Si tienes shapefiles georreferenciados, tu pipeline custom debe:
 
@@ -159,15 +164,18 @@ Si tienes shapefiles georreferenciados, tu pipeline custom debe:
 
 ## 6. Validación rápida del dataset
 
-```bash
-python prepare_data.py validate \
-  --data_dir <dataset_root> \
-  --split train
-```
+No necesitas un comando aparte: `train_class_lora.py` ejecuta un
+**pre-check del contrato** automáticamente antes de entrenar. Verifica
+que existan `train/` y `valid/` con su `images/` y
+`_annotations.coco.json`, que el JSON sea válido y tenga los campos
+`images` / `annotations` / `categories`, y que tu `--target_class` esté
+en `categories[].name`. Si algo falla, aborta con un mensaje claro antes
+de cargar el modelo.
 
-Verifica que cada imagen tenga su anotación, el JSON sea válido y los
-bboxes tengan 4 valores. No verifica la calidad de la segmentación;
-para eso, abre algunas anotaciones en Roboflow / QGIS.
+Para validarlo sin entrenar (solo el pre-check), puedes lanzar el
+entrenamiento con un dataset y revisar que pase la validación inicial, o
+correr el smoke test de la sección 6 del `AERIAL_LORA_GUIDE.md`. La
+calidad de la segmentación sí debes revisarla a ojo en Roboflow / QGIS.
 
 ## 7. Sanidad mínima
 

@@ -1,0 +1,24 @@
+SAM3 LoRA
+Copyright 2025 GeoAI LATAM
+
+This product includes software developed by GeoAI LATAM, licensed under the
+Apache License, Version 2.0 (see the LICENSE file).
+
+-------------------------------------------------------------------------------
+Vendored third-party code
+-------------------------------------------------------------------------------
+
+This repository vendors the SAM 3 (Segment Anything Model 3) model code from
+Meta Platforms, Inc. under the `sam3/` directory:
+
+    sam3/    Copyright (c) Meta Platforms, Inc. and affiliates.
+
+That code is NOT covered by this project's Apache-2.0 license. It is provided
+under, and remains subject to, its own upstream license and the access terms of
+the gated model repository at https://huggingface.co/facebook/sam3 . You must
+request and be granted access to `facebook/sam3` on Hugging Face, and comply
+with Meta's SAM 3 license, before downloading the model weights or redistributing
+the `sam3/` code. Review the upstream terms before any redistribution.
+
+The SAM 3 model weights themselves are downloaded at runtime from Hugging Face
+and are not included in this repository.

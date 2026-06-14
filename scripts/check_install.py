@@ -80,8 +80,9 @@ def cuda_available():
     import torch
     if not torch.cuda.is_available():
         raise RuntimeError(
-            "torch.cuda.is_available() is False — training will fall back to CPU "
-            "and be extremely slow"
+            "torch.cuda.is_available() is False — training requires a CUDA GPU. "
+            "There is no usable CPU training path (the SAM3 model + triton loss "
+            "kernels need CUDA). Run on a Linux+CUDA host."
         )
 
 

@@ -168,6 +168,25 @@ If you see errors, review the [Troubleshooting](#troubleshooting) section.
 
 ## Quick Start
 
+> ## 🛑 Esta sección (y todo lo que sigue) es LEGACY
+>
+> Los comandos de abajo usan scripts y configs que **ya no existen** en la
+> raíz (`train_sam3_lora_native.py`, `configs/full_lora_config.yaml`, …) y
+> se conservan solo como referencia histórica. **No los copies.**
+>
+> Para el pipeline actual (un LoRA por clase, imágenes aéreas) usa:
+> - **[`AERIAL_LORA_GUIDE.md`](./AERIAL_LORA_GUIDE.md)** — guía canónica.
+> - **[`docs/`](./docs/README.md)** — manuales en español.
+>
+> Flujo real:
+> ```bash
+> python train_class_lora.py --dataset_root data/avocado \
+>     --target_class avocado_tree --output_dir outputs/avocado_lora
+> python predict_class.py --lora_weights outputs/avocado_lora/best_lora_weights.pt \
+>     --class_name avocado_tree --input_dir data/test_tiles \
+>     --output_dir outputs/avocado_preds
+> ```
+
 > **⚠️ Important**: Make sure you've completed the [Installation](#installation) steps, including Hugging Face login, before proceeding.
 
 **Example Result**: Train a model to detect concrete cracks with just ~1% trainable parameters!

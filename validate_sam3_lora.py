@@ -917,6 +917,14 @@ def validate(config_path, weights_path, val_data_dir, num_samples=None,
                 v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ])
 
+            # The pipeline contract keeps tiles in an images/ subdir
+            # (<root>/valid/images/), matching the trainer. __getitem__ joins
+            # split_dir / file_name, so point split_dir at images/ when present
+            # (fall back to the flat layout for older datasets). The COCO file
+            # was already loaded above from self.data_dir.
+            images_subdir = self.data_dir / "images"
+            self.split_dir = images_subdir if images_subdir.is_dir() else self.data_dir
+
     val_ds = DirectCOCODataset(val_data_dir)
 
     if num_samples:
