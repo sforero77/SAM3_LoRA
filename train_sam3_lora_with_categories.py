@@ -34,6 +34,7 @@ DEFAULT_PROMPT_REGISTRY = Path(__file__).parent / "prompts" / "class_prompts.yam
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
 from sam3.train.data.collator import collate_fn_api
+from sam3.model.model_misc import SAM3Output
 from sam3.train.loss.loss_fns import IABCEMdetr, Boxes, Masks, CORE_LOSS_KEY
 from sam3.train.loss.sam3_loss import Sam3LossWrapper
 from sam3.train.matcher import BinaryHungarianMatcherV2, BinaryOneToManyMatcher
@@ -675,11 +676,11 @@ class SAM3TrainerWithCategories:
     def _compute_loss(self, outputs_list, input_batch):
         """Run Sam3LossWrapper and return the scalar core loss.
 
-        The model already injects Hungarian matcher indices into the outputs
-        during its training-mode forward (it owns the matcher, set because we
-        build with eval_mode=False); the loss wrapper only reads them. So here
-        we just back-convert the targets and run the loss. Mirrors the loss
-        call in validate_sam3_lora.py.
+        The model injects Hungarian matcher indices into the outputs during its
+        TRAINING-mode forward (it owns the matcher, set because we build with
+        eval_mode=False). In EVAL mode (validation) that internal matching is
+        skipped, so we inject the indices here when they are missing. The loss
+        wrapper only reads out["indices"]. Mirrors validate_sam3_lora.py.
         """
         find_targets = [
             self._unwrapped_model.back_convert(t) for t in input_batch.find_targets
@@ -688,6 +689,19 @@ class SAM3TrainerWithCategories:
             for k, v in targets.items():
                 if isinstance(v, torch.Tensor):
                     targets[k] = v.to(self.device)
+
+        # Inject matcher indices for any output that lacks them (the eval-mode
+        # forward does not compute matching). No-op during training.
+        with SAM3Output.iteration_mode(
+            outputs_list, iter_mode=SAM3Output.IterMode.ALL_STEPS_PER_STAGE
+        ) as outputs_iter:
+            for stage_outputs, stage_targets in zip(outputs_iter, find_targets):
+                for outputs in stage_outputs:
+                    if "indices" not in outputs:
+                        outputs["indices"] = self.matcher(outputs, stage_targets)
+                    for aux_out in outputs.get("aux_outputs", []):
+                        if "indices" not in aux_out:
+                            aux_out["indices"] = self.matcher(aux_out, stage_targets)
 
         loss_dict = self.loss_wrapper(outputs_list, find_targets)
         return loss_dict[CORE_LOSS_KEY]
