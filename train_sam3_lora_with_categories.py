@@ -34,7 +34,6 @@ DEFAULT_PROMPT_REGISTRY = Path(__file__).parent / "prompts" / "class_prompts.yam
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
 from sam3.train.data.collator import collate_fn_api
-from sam3.model.model_misc import SAM3Output
 from sam3.train.loss.loss_fns import IABCEMdetr, Boxes, Masks, CORE_LOSS_KEY
 from sam3.train.loss.sam3_loss import Sam3LossWrapper
 from sam3.train.matcher import BinaryHungarianMatcherV2, BinaryOneToManyMatcher
@@ -490,7 +489,11 @@ class SAM3TrainerWithCategories:
             device=self.device.type,
             compile=False,
             load_from_HF=True,
-            bpe_path="sam3/assets/bpe_simple_vocab_16e6.txt.gz"
+            bpe_path="sam3/assets/bpe_simple_vocab_16e6.txt.gz",
+            # Training (not inference): builds the model's internal Hungarian
+            # matcher so forward() can compute matching indices. With the
+            # default eval_mode=True the matcher is None and forward() crashes.
+            eval_mode=False,
         )
 
         # Apply LoRA
@@ -670,12 +673,13 @@ class SAM3TrainerWithCategories:
         print(f"\n✅ Training complete! Weights saved to {self.output_dir}")
 
     def _compute_loss(self, outputs_list, input_batch):
-        """Hungarian-matched SAM3 loss.
+        """Run Sam3LossWrapper and return the scalar core loss.
 
-        Injects matcher indices into every output stage/step (and aux outputs),
-        then runs Sam3LossWrapper — the same sequence used by
-        validate_sam3_lora.py and the legacy native trainer. Returns the scalar
-        core loss.
+        The model already injects Hungarian matcher indices into the outputs
+        during its training-mode forward (it owns the matcher, set because we
+        build with eval_mode=False); the loss wrapper only reads them. So here
+        we just back-convert the targets and run the loss. Mirrors the loss
+        call in validate_sam3_lora.py.
         """
         find_targets = [
             self._unwrapped_model.back_convert(t) for t in input_batch.find_targets
@@ -684,16 +688,6 @@ class SAM3TrainerWithCategories:
             for k, v in targets.items():
                 if isinstance(v, torch.Tensor):
                     targets[k] = v.to(self.device)
-
-        with SAM3Output.iteration_mode(
-            outputs_list, iter_mode=SAM3Output.IterMode.ALL_STEPS_PER_STAGE
-        ) as outputs_iter:
-            for stage_outputs, stage_targets in zip(outputs_iter, find_targets):
-                for outputs in stage_outputs:
-                    outputs["indices"] = self.matcher(outputs, stage_targets)
-                    if "aux_outputs" in outputs:
-                        for aux_out in outputs["aux_outputs"]:
-                            aux_out["indices"] = self.matcher(aux_out, stage_targets)
 
         loss_dict = self.loss_wrapper(outputs_list, find_targets)
         return loss_dict[CORE_LOSS_KEY]
