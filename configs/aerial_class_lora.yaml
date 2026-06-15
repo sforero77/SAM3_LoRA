@@ -69,9 +69,11 @@ training:
   save_steps: 500
   save_total_limit: 3
 
-  mixed_precision: "bf16"
+  mixed_precision: "bf16"        # 'bf16' (less VRAM) or 'no' (fp32, proven recipe)
   seed: 42
-  gradient_accumulation_steps: 4
+  # 1 = an optimizer update every batch (most updates; best for small datasets).
+  # Raise it only with a large dataset where you want a bigger effective batch.
+  gradient_accumulation_steps: 1
 
 output:
   output_dir: "outputs/{{TARGET_CLASS}}_lora"

@@ -52,6 +52,8 @@ def resolve_config(
     epochs: Optional[int],
     batch_size: Optional[int],
     learning_rate: Optional[float],
+    grad_accum: Optional[int] = None,
+    mixed_precision: Optional[str] = None,
 ) -> dict:
     with open(template_path, "r") as f:
         cfg = yaml.safe_load(f)
@@ -75,6 +77,10 @@ def resolve_config(
         train_cfg["batch_size"] = batch_size
     if learning_rate is not None:
         train_cfg["learning_rate"] = learning_rate
+    if grad_accum is not None:
+        train_cfg["gradient_accumulation_steps"] = grad_accum
+    if mixed_precision is not None:
+        train_cfg["mixed_precision"] = mixed_precision
 
     return cfg
 
@@ -167,6 +173,16 @@ def main():
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument(
+        "--grad_accum", type=int, default=None,
+        help="Gradient accumulation steps (override config). With batch_size=1, "
+             "accum=1 gives the most optimizer updates (best for small datasets).",
+    )
+    parser.add_argument(
+        "--mixed_precision", type=str, default=None, choices=["no", "bf16"],
+        help="'bf16' (less VRAM) or 'no' (fp32, the proven legacy recipe). "
+             "Overrides the config.",
+    )
+    parser.add_argument(
         "--skip_validation",
         action="store_true",
         help="Skip the dataset contract pre-check (not recommended).",
@@ -187,6 +203,8 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
+        grad_accum=args.grad_accum,
+        mixed_precision=args.mixed_precision,
     )
 
     resolved_path = args.output_dir / "resolved_config.yaml"
