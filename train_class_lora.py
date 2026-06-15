@@ -82,6 +82,7 @@ def resolve_config(
 def validate_dataset(dataset_root: Path, target_class: str) -> None:
     """Fail fast with a clear message if the input contract is not met."""
     errors = []
+    img_exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
     for split in ("train", "valid"):
         split_dir = dataset_root / split
         coco_path = split_dir / "_annotations.coco.json"
@@ -92,9 +93,18 @@ def validate_dataset(dataset_root: Path, target_class: str) -> None:
         if not coco_path.is_file():
             errors.append(f"missing COCO file: {coco_path}")
             continue
+        # Images may be in an images/ subdir (contract) OR flat in the split dir
+        # (Roboflow "COCO Segmentation" export). Accept either.
         if not images_dir.is_dir():
-            errors.append(f"missing images directory: {images_dir}")
-            continue
+            has_flat_images = split_dir.is_dir() and any(
+                p.is_file() and p.suffix.lower() in img_exts for p in split_dir.iterdir()
+            )
+            if not has_flat_images:
+                errors.append(
+                    f"no images found: expected {images_dir}/ or image files "
+                    f"directly in {split_dir}"
+                )
+                continue
         try:
             with open(coco_path, "r") as f:
                 data = json.load(f)

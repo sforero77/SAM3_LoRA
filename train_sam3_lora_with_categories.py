@@ -55,8 +55,12 @@ class SAM3DatasetWithCategories(Dataset):
         photometric_jitter: bool = True,
     ):
         self.root_dir = Path(root_dir)
-        self.images_dir = self.root_dir / "images"
-        self.annotations_dir = self.root_dir / "annotations"
+        # Tiles live in an images/ subdir per the contract, but tolerate a flat
+        # layout (images directly in the split dir). That flat layout is exactly
+        # what Roboflow's "COCO Segmentation" export produces — the most common
+        # real-data source — so accept it without forcing a reorganisation.
+        _images_subdir = self.root_dir / "images"
+        self.images_dir = _images_subdir if _images_subdir.is_dir() else self.root_dir
         self.target_class = target_class
         self.augment = bool(augment)
         self.photometric_jitter = bool(photometric_jitter) and self.augment
