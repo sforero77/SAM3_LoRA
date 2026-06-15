@@ -60,7 +60,7 @@ def _make_tile(tile_idx: int, size: int):
     bg = np.empty((size, size, 3), dtype=np.uint8)
     bg[:] = base.astype(np.uint8)
     bg[..., 1] = min(255, int(base[1]) + 30)
-    img = Image.fromarray(bg, mode="RGB")
+    img = Image.fromarray(bg)  # (H, W, 3) uint8 -> RGB
     draw = ImageDraw.Draw(img)
 
     rects = _deterministic_buildings(tile_idx, size)

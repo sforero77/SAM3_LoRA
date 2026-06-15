@@ -34,7 +34,10 @@ DEFAULT_PROMPT_REGISTRY = Path(__file__).parent / "prompts" / "class_prompts.yam
 from sam3.model_builder import build_sam3_image_model
 from sam3.train.data.sam3_image_dataset import Datapoint, Image, Object, FindQueryLoaded, InferenceMetadata
 from sam3.train.data.collator import collate_fn_api
-from sam3.train.loss.sam3_loss import SAM3Loss
+from sam3.model.model_misc import SAM3Output
+from sam3.train.loss.loss_fns import IABCEMdetr, Boxes, Masks, CORE_LOSS_KEY
+from sam3.train.loss.sam3_loss import Sam3LossWrapper
+from sam3.train.matcher import BinaryHungarianMatcherV2, BinaryOneToManyMatcher
 
 from lora_layers import LoRAConfig, apply_lora_to_model, save_lora_weights, count_parameters
 
@@ -572,8 +575,37 @@ class SAM3TrainerWithCategories:
         else:
             self.val_loader = None
 
-        # Loss
-        self.loss_fn = SAM3Loss()
+        # Loss — Sam3LossWrapper with Hungarian matching, mirroring the proven
+        # setup in validate_sam3_lora.py and the legacy native trainer. (The old
+        # `SAM3Loss()` never existed in the vendored SAM3 code, so this trainer
+        # could not even import before.)
+        self._unwrapped_model = self.model
+        self.matcher = BinaryHungarianMatcherV2(
+            cost_class=2.0, cost_bbox=5.0, cost_giou=2.0, focal=True
+        )
+        loss_fns = [
+            Boxes(weight_dict={"loss_bbox": 5.0, "loss_giou": 2.0}),
+            IABCEMdetr(
+                pos_weight=10.0,
+                weight_dict={"loss_ce": 20.0, "presence_loss": 20.0},
+                pos_focal=False, alpha=0.25, gamma=2,
+                use_presence=True, pad_n_queries=200,
+            ),
+            Masks(
+                weight_dict={"loss_mask": 200.0, "loss_dice": 10.0},
+                focal_alpha=0.25, focal_gamma=2.0, compute_aux=False,
+            ),
+        ]
+        o2m_matcher = BinaryOneToManyMatcher(alpha=0.3, threshold=0.4, topk=4)
+        self.loss_wrapper = Sam3LossWrapper(
+            loss_fns_find=loss_fns,
+            matcher=self.matcher,
+            o2m_matcher=o2m_matcher,
+            o2m_weight=2.0,
+            use_o2m_matcher_on_o2m_aux=False,
+            normalization="local",
+            normalize_by_valid_object_num=False,
+        )
 
         # Optimizer (only LoRA parameters)
         lora_params = [p for p in self.model.parameters() if p.requires_grad]
@@ -637,6 +669,35 @@ class SAM3TrainerWithCategories:
 
         print(f"\n✅ Training complete! Weights saved to {self.output_dir}")
 
+    def _compute_loss(self, outputs_list, input_batch):
+        """Hungarian-matched SAM3 loss.
+
+        Injects matcher indices into every output stage/step (and aux outputs),
+        then runs Sam3LossWrapper — the same sequence used by
+        validate_sam3_lora.py and the legacy native trainer. Returns the scalar
+        core loss.
+        """
+        find_targets = [
+            self._unwrapped_model.back_convert(t) for t in input_batch.find_targets
+        ]
+        for targets in find_targets:
+            for k, v in targets.items():
+                if isinstance(v, torch.Tensor):
+                    targets[k] = v.to(self.device)
+
+        with SAM3Output.iteration_mode(
+            outputs_list, iter_mode=SAM3Output.IterMode.ALL_STEPS_PER_STAGE
+        ) as outputs_iter:
+            for stage_outputs, stage_targets in zip(outputs_iter, find_targets):
+                for outputs in stage_outputs:
+                    outputs["indices"] = self.matcher(outputs, stage_targets)
+                    if "aux_outputs" in outputs:
+                        for aux_out in outputs["aux_outputs"]:
+                            aux_out["indices"] = self.matcher(aux_out, stage_targets)
+
+        loss_dict = self.loss_wrapper(outputs_list, find_targets)
+        return loss_dict[CORE_LOSS_KEY]
+
     def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0
@@ -654,11 +715,11 @@ class SAM3TrainerWithCategories:
             # Move to device
             input_batch = self._move_to_device(input_batch, self.device)
 
-            # Forward (under autocast when bf16 mixed precision is requested)
+            # Forward under autocast (bf16); loss + Hungarian matching run in
+            # fp32 outside autocast for numerical stability.
             with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
-                outputs = self.model(input_batch)
-                loss_dict = self.loss_fn(outputs, input_batch)
-                loss = loss_dict["loss"]
+                outputs_list = self.model(input_batch)
+            loss = self._compute_loss(outputs_list, input_batch)
 
             # Scale so accumulated grads over `accum` micro-batches equal the
             # average gradient of one effective batch (size batch_size × accum).
@@ -687,9 +748,8 @@ class SAM3TrainerWithCategories:
                 input_batch = self._move_to_device(input_batch, self.device)
 
                 with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=use_amp):
-                    outputs = self.model(input_batch)
-                    loss_dict = self.loss_fn(outputs, input_batch)
-                    loss = loss_dict["loss"]
+                    outputs_list = self.model(input_batch)
+                loss = self._compute_loss(outputs_list, input_batch)
 
                 total_loss += loss.item()
 
