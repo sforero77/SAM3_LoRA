@@ -111,7 +111,7 @@ def _post_process(
         # (we threshold afterwards anyway).
         resized = np.zeros((len(kept_masks), orig_h, orig_w), dtype=np.float32)
         for i, m in enumerate(kept_masks):
-            mp = PILImage.fromarray((m > 0).astype(np.uint8) * 255, mode="L")
+            mp = PILImage.fromarray((m > 0).astype(np.uint8) * 255)  # 2D uint8 -> "L"
             mp = mp.resize((orig_w, orig_h), PILImage.NEAREST)
             resized[i] = np.array(mp) > 127
         out_masks = resized
@@ -216,7 +216,7 @@ def run(args):
                 union[int(y1):int(y2), int(x1):int(x2)] = 255
 
         out_mask_path = masks_dir / f"{tile_path.stem}_mask.png"
-        PILImage.fromarray(union, mode="L").save(out_mask_path)
+        PILImage.fromarray(union).save(out_mask_path)  # 2D uint8 -> "L"
         total_detected += int(len(kept))
         print(f"  → {len(kept)} instance(s) above threshold {args.threshold}; "
               f"mask saved to {out_mask_path.relative_to(output_dir)}")
