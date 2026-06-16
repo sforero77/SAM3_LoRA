@@ -390,9 +390,16 @@ class SAM3DatasetWithCategories(Dataset):
                 ann.get('segmentation'), orig_h, orig_w, filename, i
             )
 
-            # Apply the same geometric op to bbox and mask
+            # Apply the same geometric op to bbox and mask (still in pixels).
             box_tensor = self._apply_aug_to_bbox(box_tensor, aug_op, self.resolution)
             segment = self._apply_aug_to_mask(segment, aug_op)
+
+            # CRITICAL: normalize the box to [0, 1]. SAM3's box/giou loss and
+            # matcher expect normalized coordinates (see validate_sam3_lora.py's
+            # dataset, which divides by resolution). Without this the model is
+            # trained on ~1000x-too-large box targets and collapses to
+            # full-image boxes (w≈h≈1.0) → zero usable detections.
+            box_tensor = box_tensor / self.resolution
 
             obj = Object(
                 bbox=box_tensor,
